@@ -1,0 +1,78 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.2.5'
+    id 'io.spring.dependency-management' version '1.1.4'
+}
+
+group = 'com.opsbot'
+version = '0.0.1-SNAPSHOT'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+/*
+ * Lombok needs to be on the annotation processor path in Gradle.
+ * compileOnly = available at compile time but NOT in the final JAR
+ * annotationProcessor = runs @Data, @Builder etc. during javac
+ * Both lines are required — unlike Maven where <optional>true</optional> handled both.
+ */
+configurations {
+    compileOnly {
+        extendsFrom annotationProcessor
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Web layer
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+
+    // Data: JPA + Postgres driver
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+    runtimeOnly 'org.postgresql:postgresql'
+
+    /*
+     * pgvector JDBC type support.
+     * Registers the 'vector' Postgres type so JPA can map it to float[].
+     * Without this, Hibernate throws "No Dialect mapping for JDBC type: vector".
+     * Version pinned explicitly — not managed by Spring Boot BOM.
+     */
+    implementation 'com.pgvector:pgvector:0.1.6'
+
+    // HTTP client for Anthropic API calls
+    implementation 'org.springframework.boot:spring-boot-starter-webflux'
+
+    // JSON serialisation — version managed by Spring Boot BOM
+    implementation 'com.fasterxml.jackson.core:jackson-databind'
+
+    // Lombok
+    compileOnly 'org.projectlombok:lombok'
+    annotationProcessor 'org.projectlombok:lombok'
+
+    // Validation
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+
+    // Flyway — uncomment in Week 2
+    // implementation 'org.flywaydb:flyway-core'
+
+    // Test
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
+
+/*
+ * bootJar is the Spring Boot fat JAR task (equivalent of mvn package).
+ * Setting a fixed archive name gives the Dockerfile a predictable COPY target
+ * instead of needing a wildcard like build/libs/*.jar
+ */
+tasks.named('bootJar') {
+    archiveFileName = 'opsbot.jar'
+}

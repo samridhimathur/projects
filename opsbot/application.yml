@@ -1,0 +1,41 @@
+spring:
+  application:
+    name: opsbot
+
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/opsbot}
+    username: ${SPRING_DATASOURCE_USERNAME:opsbot}
+    password: ${SPRING_DATASOURCE_PASSWORD:opsbot_secret}
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: validate          # never let Hibernate touch schema in prod; init.sql owns it
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+    show-sql: false               # flip to true for local debugging
+
+  # Jackson: serialize enums as strings, not ordinal ints
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+    default-property-inclusion: non_null
+
+server:
+  port: 8080
+  error:
+    include-message: always       # surface error messages in dev; lock down in prod
+
+anthropic:
+  api:
+    key: ${ANTHROPIC_API_KEY}
+    base-url: https://api.anthropic.com
+    model: claude-sonnet-4-20250514
+    max-tokens: 2048
+
+logging:
+  level:
+    com.opsbot: DEBUG
+    org.springframework.web: INFO

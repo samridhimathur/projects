@@ -1,0 +1,42 @@
+version: "3.9"
+
+services:
+  # ─── Postgres + pgvector ───────────────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16          # official image ships with the extension pre-built
+    container_name: opsbot-postgres
+    environment:
+      POSTGRES_DB: opsbot
+      POSTGRES_USER: opsbot
+      POSTGRES_PASSWORD: opsbot_secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/sql/init.sql:/docker-entrypoint-initdb.d/init.sql   # runs once on first boot
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opsbot -d opsbot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Spring Boot app ───────────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: DockerFile
+    container_name: opsbot-app
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/opsbot
+      SPRING_DATASOURCE_USERNAME: opsbot
+      SPRING_DATASOURCE_PASSWORD: opsbot_secret
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}           # injected from host env / .env file
+    depends_on:
+      postgres:
+        condition: service_healthy                       # wait for PG health, not just container start
+    restart: on-failure
+
+volumes:
+  postgres_data:

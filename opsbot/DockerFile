@@ -1,0 +1,59 @@
+# ─── Stage 1: Build ───────────────────────────────────────────────────────────
+FROM gradle:8.7-jdk17 AS builder
+WORKDIR /build
+
+# Copy only the build descriptor files first.
+# Docker builds images in layers — each instruction is a cached layer.
+# By copying build.gradle and settings.gradle BEFORE the source code,
+# the dependency download layer is only invalidated when these files change,
+# not every time you edit a .java file.
+COPY build.gradle settings.gradle ./
+
+# Download all dependencies into the Gradle cache inside the container.
+# --no-daemon: Gradle normally starts a background daemon process to speed up
+# repeated local builds. Inside Docker there are no repeated builds, so the
+# daemon just wastes ~200MB of container memory. We turn it off.
+# -q: quiet output — suppresses the download progress spam in CI logs.
+RUN gradle dependencies --no-daemon -q
+
+# Now copy source code. This layer is rebuilt on every .java change,
+# but the layer above (dependencies) stays cached — saving 2-3 minutes
+# on every incremental rebuild.
+COPY src ./src
+
+# bootJar is the Spring Boot Gradle task that produces a fat/uber JAR —
+# a single self-contained JAR with all dependencies bundled inside.
+# -x test: skip tests during Docker build (run them in CI separately).
+RUN gradle bootJar --no-daemon -x test -q
+
+# ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
+# We switch to a completely fresh base image here.
+# The builder stage above (~600MB with JDK + Gradle) is discarded entirely.
+# Only the compiled JAR is carried forward via COPY --from=builder.
+FROM eclipse-temurin:17-jre-alpine
+WORKDIR /app
+
+# Run as a non-root user — if the container is ever compromised,
+# the attacker gets opsbot user privileges, not root.
+RUN addgroup -S opsbot && adduser -S opsbot -G opsbot
+USER opsbot
+
+# Copy ONLY the fat JAR from the builder stage.
+# build/libs/opsbot.jar is the fixed name we set via archiveFileName in build.gradle.
+COPY --from=builder /build/build/libs/opsbot.jar app.jar
+
+EXPOSE 8080
+
+# ENTRYPOINT vs CMD:
+# ENTRYPOINT = the process that always runs (cannot be overridden easily)
+# CMD = default arguments (can be overridden at docker run time)
+# Using ENTRYPOINT with the JAR as fixed means the container IS the app.
+#
+# JVM flags:
+#   -XX:+UseContainerSupport  → JVM reads cgroup memory limit, not host RAM
+#   -XX:MaxRAMPercentage=75.0 → allocate 75% of container RAM to the heap;
+#                               remaining 25% goes to off-heap (metaspace, threads)
+ENTRYPOINT ["java", \
+  "-XX:+UseContainerSupport", \
+  "-XX:MaxRAMPercentage=75.0", \
+  "-jar", "app.jar"]
