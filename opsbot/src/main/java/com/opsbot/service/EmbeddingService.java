@@ -1,141 +1,156 @@
 package com.opsbot.service;
 
-import com.opsbot.client.AnthropicClient;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.opsbot.config.CohereConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
+import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
 
 /*
- * IMPORTANT — INTERVIEW NOTE:
+ * EmbeddingService — converts text to float[] using Cohere embed-english-v3.0
  *
- * Claude does NOT have an embeddings API. It generates text, not vectors.
- * Real embedding models (Cohere, OpenAI, Voyage) are trained specifically
- * to produce vectors where semantic similarity = geometric closeness.
+ * WHAT IS AN EMBEDDING?
+ * A vector (float array) where each number encodes some aspect of meaning.
+ * Similar texts produce geometrically close vectors.
+ * "memory leak" and "OOM error" will be close. "memory leak" and "pizza" will be far.
  *
- * What we do here is a WORKAROUND for a portfolio project:
- *   1. Ask Claude to summarize the chunk into key technical terms
- *   2. Hash that summary using SHA-256 into bytes
- *   3. Convert bytes into a float[] of 1024 dimensions
+ * WHY COHERE embed-english-v3.0?
+ * - 1024 dimensions — matches our vector(1024) schema exactly, no changes needed
+ * - Excellent for technical text — trained on English technical content
  *
- * This produces DETERMINISTIC vectors (same text = same vector) but they
- * are NOT semantically meaningful — similar incidents won't produce similar
- * vectors. The RAG retrieval will work structurally but won't find truly
- * "similar" incidents the way real embeddings would.
+ * MATURE ALTERNATIVES:
+ * - Voyage AI voyage-3-lite  → 1024 dims, 200M free tokens (most generous free tier)
+ * - OpenAI text-embedding-3-small → 1536 dims, $5 free credit (need schema change)
+ * - Google Gemini Embedding  → 3072 dims, free via AI Studio (need schema change)
+ * - Ollama nomic-embed-text  → 768 dims, completely free local (need schema change)
+ * - LangChain4j              → wraps any of the above with one interface (Week 4)
  *
- * To upgrade to real embeddings in production:
- *   - Add Cohere or Voyage AI dependency
- *   - Replace generateEmbedding() with a real API call
- *   - Update vector(1024) to match the model's dimensions
- *   - Everything else (storage, retrieval, pgvector query) stays identical
  */
 @Service
 public class EmbeddingService {
 
     private static final Logger log = LoggerFactory.getLogger(EmbeddingService.class);
-    private static final int VECTOR_DIMENSIONS = 1024;
 
-    private final AnthropicClient anthropicClient;
+    private final WebClient cohereWebClient;
+    private final CohereConfig cohereConfig;
 
-    public EmbeddingService(AnthropicClient anthropicClient) {
-        this.anthropicClient = anthropicClient;
+    /*
+     * @Qualifier("cohereWebClient") tells Spring:
+     * "inject the WebClient bean named cohereWebClient"
+     *
+     * Without @Qualifier, Spring sees two WebClient beans
+     * (anthropicWebClient and cohereWebClient) and does not know
+     * which one to inject here — it throws NoUniqueBeanDefinitionException.
+     *
+     * ALTERNATIVE to @Qualifier:
+     * Name the parameter exactly the same as the bean:
+     *   public EmbeddingService(WebClient cohereWebClient, ...)
+     * Spring matches by parameter name as a fallback. But @Qualifier
+     * is more explicit and safer — always prefer it.
+     */
+    public EmbeddingService(@Qualifier("cohereWebClient") WebClient cohereWebClient,
+                            CohereConfig cohereConfig) {
+        this.cohereWebClient = cohereWebClient;
+        this.cohereConfig = cohereConfig;
     }
 
     /*
-     * Generates a pseudo-embedding for a piece of text.
+     * Converts text to a float[1024] using Cohere's embedding API.
      *
-     * Step 1 — ask Claude to extract key technical terms from the text.
-     *          This condenses the meaning into a short canonical form.
-     * Step 2 — SHA-256 hash the summary into 32 bytes.
-     * Step 3 — expand 32 bytes into 1024 floats using a deterministic
-     *          spreading function (each byte produces 32 floats via sin/cos).
-     * Step 4 — L2-normalize the vector so all vectors have unit length,
-     *          making cosine distance meaningful.
+     * Cohere API request shape:
+     * {
+     *   "texts": ["your text here"],
+     *   "model": "embed-english-v3.0",
+     *   "input_type": "search_document"   ← for storing in DB
+     * }
+     *
+     * input_type is important:
+     *   "search_document" — use when embedding text to STORE in the DB
+     *   "search_query"    — use when embedding a QUERY to search with
+     * Cohere trained the model differently for each use case.
+     * Using the wrong input_type reduces retrieval quality.
+     *
+     * Cohere API response shape:
+     * {
+     *   "embeddings": [[0.23, -0.87, 0.41, ...]]  ← array of arrays
+     *                   ↑ index 0 = first text's embedding
+     * }
      */
     public Mono<float[]> generateEmbedding(String text) {
-        String systemPrompt = """
-                Extract the key technical terms and concepts from the following text.
-                Return ONLY a comma-separated list of terms, no explanation.
-                Focus on: service names, error types, metrics, actions, components.
-                Example: "high memory, OOM, heap exhaustion, JVM, restart, pod"
-                """;
-
-        String userPrompt = "Extract key terms from:\n\n" + text;
-
-        return anthropicClient.completeRca(systemPrompt, userPrompt)
-                .map(summary -> {
-                    log.debug("Claude summary for embedding: {}", summary);
-                    return hashToVector(summary.trim());
-                })
-                .onErrorReturn(hashToVector(text)); // fallback: hash raw text if Claude fails
+        return generateEmbedding(text, "search_document");
     }
 
     /*
-     * Converts a string into a deterministic float[1024] via SHA-256.
-     *
-     * Why SHA-256?
-     * - Deterministic: same input always produces same output
-     * - Avalanche effect: small changes in input = very different hash
-     * - Fast and available in standard Java (no extra dependencies)
-     *
-     * The spreading: SHA-256 gives 32 bytes. We need 1024 floats.
-     * For each byte b at position i, we generate 32 floats using:
-     *   sin(b * (j+1)) and cos(b * (j+1)) alternating
-     * This spreads the hash evenly across all 1024 dimensions.
+     * Overload for query embeddings — used when searching pgvector.
+     * The alert payload is a QUERY so it uses "search_query" input type.
+     * Runbooks use "search_document" input type.
      */
-    private float[] hashToVector(String text) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(text.getBytes(StandardCharsets.UTF_8));
+    public Mono<float[]> generateQueryEmbedding(String text) {
+        return generateEmbedding(text, "search_query");
+    }
 
-            float[] vector = new float[VECTOR_DIMENSIONS];
-            for (int i = 0; i < hash.length; i++) {
-                for (int j = 0; j < VECTOR_DIMENSIONS / hash.length; j++) {
-                    int idx = i * (VECTOR_DIMENSIONS / hash.length) + j;
-                    // alternating sin/cos spreads the hash into float space
-                    vector[idx] = (float) (j % 2 == 0
-                            ? Math.sin(hash[i] * (j + 1))
-                            : Math.cos(hash[i] * (j + 1)));
-                }
-            }
+    private Mono<float[]> generateEmbedding(String text, String inputType) {
+        Map<String, Object> requestBody = Map.of(
+                "texts", List.of(text),
+                "model", cohereConfig.getModel(),
+                "input_type", inputType
+        );
 
-            return l2Normalize(vector);
-
-        } catch (Exception e) {
-            log.error("Failed to hash text to vector", e);
-            return new float[VECTOR_DIMENSIONS]; // zero vector fallback
-        }
+        return cohereWebClient.post()
+                .uri("/v1/embed")
+                .bodyValue(requestBody)
+                .retrieve()
+                .bodyToMono(JsonNode.class)
+                .map(response -> parseEmbedding(response))
+                .doOnSuccess(v  -> log.debug("Embedding generated, dims={}", v.length))
+                .doOnError(e    -> log.error("Cohere embedding failed: {}", e.getMessage()))
+                .onErrorResume(e -> {
+                    /*
+                     * If Cohere is down or rate limited, fall back to a zero vector.
+                     * This means the RCA will run without runbook context rather
+                     * than failing entirely. The alert still gets analysed by Claude,
+                     * just without relevant runbook chunks injected.
+                     *
+                     * In production you might want to fail hard here instead,
+                     * depending on how critical runbook context is to your RCA quality.
+                     */
+                    log.warn("Cohere unavailable, using zero vector fallback");
+                    return Mono.just(new float[1024]);
+                });
     }
 
     /*
-     * L2 normalization: scales the vector so its length = 1.
-     * Required for cosine distance to work correctly in pgvector.
-     * Without this, longer texts produce larger magnitude vectors and
-     * dominate similarity scores regardless of actual content similarity.
+     * Parses Cohere's response JSON into a float[].
+     *
+     * response.path("embeddings") → the outer array
+     * .get(0)                     → first embedding (we only sent one text)
+     * loop                        → convert each JsonNode double to float
      */
-    private float[] l2Normalize(float[] vector) {
-        double sumOfSquares = 0.0;
-        for (float v : vector) {
-            sumOfSquares += v * v;
-        }
-        double magnitude = Math.sqrt(sumOfSquares);
+    private float[] parseEmbedding(JsonNode response) {
+        JsonNode embeddingNode = response.path("embeddings").get(0);
 
-        if (magnitude == 0.0) return vector;
-
-        float[] normalized = Arrays.copyOf(vector, vector.length);
-        for (int i = 0; i < normalized.length; i++) {
-            normalized[i] = (float) (normalized[i] / magnitude);
+        if (embeddingNode == null || !embeddingNode.isArray()) {
+            log.error("Unexpected Cohere response shape: {}", response);
+            return new float[1024];
         }
-        return normalized;
+
+        float[] vector = new float[embeddingNode.size()];
+        for (int i = 0; i < embeddingNode.size(); i++) {
+            vector[i] = (float) embeddingNode.get(i).asDouble();
+        }
+        return vector;
     }
 
     /*
      * Converts float[] to pgvector string format: "[0.1,0.2,0.3,...]"
-     * This is the format the native SQL query expects for CAST(:embedding AS vector).
+     * Required by the native SQL query:
+     *   ORDER BY embedding <=> CAST(:embedding AS vector)
      */
     public String vectorToString(float[] vector) {
         StringBuilder sb = new StringBuilder("[");

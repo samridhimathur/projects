@@ -35,6 +35,12 @@ anthropic:
     model: claude-sonnet-4-20250514
     max-tokens: 2048
 
+cohere:
+  api:
+    key: ${COHERE_API_KEY}
+    base-url: https://api.cohere.com
+    model: embed-english-v3.0
+
 logging:
   level:
     com.opsbot: DEBUG

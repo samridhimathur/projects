@@ -33,6 +33,7 @@ services:
       SPRING_DATASOURCE_USERNAME: opsbot
       SPRING_DATASOURCE_PASSWORD: opsbot_secret
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      COHERE_API_KEY: ${COHERE_API_KEY}
     volumes:
       # Mount runbooks directory so the app can read .txt files
       # The IngestionController reads from /runbooks inside the container

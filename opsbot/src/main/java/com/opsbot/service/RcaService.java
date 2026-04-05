@@ -67,7 +67,7 @@ public class RcaService {
         // Steps 2-3-4-5 chained as a reactive pipeline
         // then flatMapMany converts Mono<Flux<String>> → Flux<String>
         return buildAlertText(alertPayload)
-                .flatMap(alertText -> embeddingService.generateEmbedding(alertText))
+                .flatMap(alertText -> embeddingService.generateQueryEmbedding(alertText))
                 .flatMap(embedding -> findSimilarChunks(embedding))
                 .flatMapMany(chunks -> {
                     // Step 4 — build prompt with runbook context injected

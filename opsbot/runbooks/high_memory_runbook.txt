@@ -1,0 +1,24 @@
+High Memory Usage Runbook
+
+This runbook covers investigation and resolution of high memory usage alerts for JVM-based services running in Kubernetes.
+
+Symptoms
+Memory usage above 85% for more than 5 minutes. OOMKilled pods appearing in kubectl describe. Increased GC pause times visible in metrics. Service response times degrading gradually.
+
+Immediate Actions
+Check current memory usage with kubectl top pods -n production. Identify which container is consuming memory. Check for OOMKilled events with kubectl get events --field-selector reason=OOMKilling.
+
+Investigation Steps
+Capture a heap dump if the pod is still running: kubectl exec -it <pod> -- jmap -dump:format=b,file=/tmp/heap.hprof 1. Copy the heap dump locally: kubectl cp <pod>:/tmp/heap.hprof ./heap.hprof. Open with Eclipse MAT or JVisualVM to identify the largest retained objects.
+
+Common Causes
+Memory leak in a cache that grows unbounded. Large query result sets loaded entirely into memory. Improper connection pool configuration causing connection objects to accumulate. Static collections holding references preventing garbage collection.
+
+Resolution
+Increase memory limits temporarily to restore service: kubectl set resources deployment <name> --limits=memory=2Gi. Deploy a fix for the root cause — typically involves adding eviction policies to caches or adding pagination to large queries. Roll out the fix during low traffic window. Monitor memory usage for 30 minutes after fix deployment.
+
+Escalation
+If memory usage does not stabilize after increasing limits, escalate to the platform engineering team. Attach the heap dump analysis to the incident ticket.
+
+Estimated Resolution Time
+Simple limit increase: 5 minutes. Root cause fix and deploy: 30 to 60 minutes.

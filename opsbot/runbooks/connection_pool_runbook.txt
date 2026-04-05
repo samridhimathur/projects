@@ -1,0 +1,21 @@
+Database Connection Pool Exhaustion Runbook
+
+This runbook covers connection pool exhaustion for services using HikariCP or similar JDBC connection pools connecting to Postgres.
+
+Symptoms
+HikariPool timeout exceptions in logs: Connection is not available, request timed out after 30000ms. Increasing request latency across all endpoints. HTTP 500 errors spiking in the API gateway. Database active connections at or near max_connections limit.
+
+Immediate Actions
+Check current pool status via actuator: curl http://service:8080/actuator/metrics/hikaricp.connections.active. Check Postgres active connections: SELECT count(*) FROM pg_stat_activity WHERE state = 'active'. Identify long-running queries: SELECT pid, now() - pg_stat_activity.query_start AS duration, query FROM pg_stat_activity WHERE state = 'active' ORDER BY duration DESC LIMIT 10.
+
+Common Causes
+Missing connection close in finally block causing leak. Long-running transactions holding connections. Sudden traffic spike exceeding pool capacity. Slow database queries increasing average connection hold time. Deadlocks causing transactions to wait indefinitely.
+
+Resolution Steps
+Immediately kill long-running queries if safe to do: SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE duration > interval '5 minutes'. Enable HikariCP leak detection by setting leak-detection-threshold to 60000ms in application config. Increase pool size temporarily if traffic spike is the cause. Deploy connection leak fix if identified.
+
+Prevention
+Always use try-with-resources for connections. Set connection timeout to fail fast rather than queue indefinitely. Set maximum pool size based on database max_connections divided by number of service instances. Enable leak detection in all environments, not just production.
+
+Estimated Resolution Time
+Killing blocking queries: 2 minutes. Pool size increase via config: 10 minutes. Connection leak fix and redeploy: 20 to 45 minutes.
