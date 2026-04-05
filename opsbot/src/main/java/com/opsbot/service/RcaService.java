@@ -3,14 +3,18 @@ package com.opsbot.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.opsbot.client.AnthropicClient;
 import com.opsbot.dto.RcaResponse;
+import com.opsbot.model.RunbookChunk;
 import com.opsbot.model.RcaSession;
 import com.opsbot.repository.RcaSessionRepository;
+import com.opsbot.repository.RunbookRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
+import java.util.List;
 import java.util.Map;
 
 @Service
@@ -21,65 +25,115 @@ public class RcaService {
     private final AnthropicClient anthropicClient;
     private final RcaPromptBuilder promptBuilder;
     private final RcaSessionRepository sessionRepository;
+    private final RunbookRepository runbookRepository;
+    private final EmbeddingService embeddingService;
     private final ObjectMapper objectMapper;
 
     public RcaService(AnthropicClient anthropicClient,
                       RcaPromptBuilder promptBuilder,
                       RcaSessionRepository sessionRepository,
+                      RunbookRepository runbookRepository,
+                      EmbeddingService embeddingService,
                       ObjectMapper objectMapper) {
         this.anthropicClient = anthropicClient;
         this.promptBuilder = promptBuilder;
         this.sessionRepository = sessionRepository;
+        this.runbookRepository = runbookRepository;
+        this.embeddingService = embeddingService;
         this.objectMapper = objectMapper;
     }
 
     /*
-     * STREAMING path — used by the SSE endpoint.
-     * Returns a Flux<String> of raw text chunks for real-time display.
-     * Also saves the complete assembled response to Postgres when done.
+     * Full RAG + streaming RCA flow:
      *
-     * .publish() + .autoConnect() — we need two subscribers:
-     *   1. The HTTP response (streaming chunks to the browser)
-     *   2. The persistence layer (collecting chunks to save when complete)
-     * A plain Flux would call Anthropic twice. We use Flux.cache() to
-     * share one upstream subscription between both consumers.
+     * Step 1 — save PENDING session immediately
+     * Step 2 — embed the alert payload (convert to vector)
+     * Step 3 — search pgvector for top 5 similar runbook chunks
+     * Step 4 — build prompt with alert + runbook context
+     * Step 5 — stream Claude response
+     * Step 6 — save COMPLETE session when stream finishes
+     *
+     * Steps 2-3 happen BEFORE streaming starts.
+     * Steps 5-6 are concurrent via .cache().
      */
     public Flux<String> streamRca(Map<String, Object> alertPayload) {
-        String systemPrompt = promptBuilder.buildSystemPrompt();
-        String userPrompt = promptBuilder.buildUserPrompt(alertPayload);
 
-        // Save session immediately with PENDING status
+        // Step 1 — save session immediately so we have an ID
         RcaSession session = new RcaSession();
         session.setAlertPayload(alertPayload);
         session.setStatus(RcaSession.SessionStatus.PENDING);
         RcaSession saved = sessionRepository.save(session);
 
-        Flux<String> sharedStream = anthropicClient
-                .streamRca(systemPrompt, userPrompt)
-                .cache();   // multicast — one Anthropic call, two consumers
+        // Steps 2-3-4-5 chained as a reactive pipeline
+        // then flatMapMany converts Mono<Flux<String>> → Flux<String>
+        return buildAlertText(alertPayload)
+                .flatMap(alertText -> embeddingService.generateEmbedding(alertText))
+                .flatMap(embedding -> findSimilarChunks(embedding))
+                .flatMapMany(chunks -> {
+                    // Step 4 — build prompt with runbook context injected
+                    String systemPrompt = promptBuilder.buildSystemPrompt();
+                    String userPrompt   = promptBuilder.buildUserPrompt(alertPayload, chunks);
 
-        // Side effect: collect full response and persist when stream completes
-        sharedStream
-                .reduce("", String::concat)
-                .flatMap(fullJson -> persistResult(saved, fullJson))
-                .subscribe(
-                        s -> log.debug("Session {} saved", s.getId()),
-                        e -> log.error("Failed to persist session {}: {}", saved.getId(), e.getMessage())
-                );
+                    log.info("Found {} relevant runbook chunks for session {}",
+                            chunks.size(), saved.getId());
 
-        return sharedStream;
+                    // Step 5 — stream Claude, cache for two consumers
+                    Flux<String> sharedStream = anthropicClient
+                            .streamRca(systemPrompt, userPrompt)
+                            .cache();
+
+                    // Step 6 — collect and persist when stream completes
+                    sharedStream
+                            .reduce("", String::concat)
+                            .flatMap(fullJson -> persistResult(saved, fullJson))
+                            .subscribe(
+                                    s  -> log.debug("Session {} saved", s.getId()),
+                                    e  -> log.error("Failed to persist {}: {}", saved.getId(), e.getMessage())
+                            );
+
+                    return sharedStream;
+                })
+                .onErrorResume(e -> {
+                    log.error("RCA pipeline failed for session {}", saved.getId(), e);
+                    return Flux.error(new IllegalStateException("RCA failed: " + e.getMessage()));
+                });
     }
 
     /*
-     * Parse Claude's JSON response and save to Postgres.
-     * If parsing fails we return 500 (per our design decision).
-     * The raw response is logged so we can debug prompt issues.
+     * Converts the alert payload map to a plain text string for embedding.
+     * We concatenate all values so the embedding captures the full alert context.
+     */
+    private Mono<String> buildAlertText(Map<String, Object> alertPayload) {
+        String text = alertPayload.values().stream()
+                .map(Object::toString)
+                .reduce("", (a, b) -> a + " " + b)
+                .trim();
+        return Mono.just(text);
+    }
+
+    /*
+     * Queries pgvector for the 5 most similar runbook chunks.
+     * This is the RAG retrieval step.
+     * subscribeOn(boundedElastic) because findTopSimilarChunks is a blocking JPA call.
+     */
+    private Mono<List<RunbookChunk>> findSimilarChunks(float[] embedding) {
+        String vectorString = embeddingService.vectorToString(embedding);
+        return Mono.fromCallable(() ->
+                        runbookRepository.findTopSimilarChunks(vectorString)
+                )
+                .subscribeOn(Schedulers.boundedElastic())
+                .doOnSuccess(chunks ->
+                        log.debug("pgvector returned {} chunks", chunks.size()));
+    }
+
+    /*
+     * Parse Claude's JSON response and persist as COMPLETE session.
+     * Returns 500 if JSON is unparseable (per our design decision).
      */
     private Mono<RcaSession> persistResult(RcaSession session, String rawJson) {
         try {
             RcaResponse rcaResponse = objectMapper.readValue(rawJson, RcaResponse.class);
 
-            // Normalise severity to uppercase regardless of what Claude returned
             if (rcaResponse.getSeverity() != null) {
                 rcaResponse.setSeverity(rcaResponse.getSeverity().toUpperCase());
             }
@@ -89,12 +143,12 @@ public class RcaService {
 
             session.setRcaOutput(rcaMap);
             session.setStatus(RcaSession.SessionStatus.COMPLETE);
-            return Mono.just(sessionRepository.save(session));
+            return Mono.fromCallable(() -> sessionRepository.save(session))
+                    .subscribeOn(Schedulers.boundedElastic());
 
         } catch (Exception e) {
             log.error("Failed to parse Claude response for session {}: {}",
                     session.getId(), rawJson);
-            // Re-throw so the 500 handler in the controller catches it
             return Mono.error(new IllegalStateException(
                     "Claude returned unparseable JSON: " + e.getMessage()));
         }

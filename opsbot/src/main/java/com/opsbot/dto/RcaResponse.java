@@ -1,61 +1,46 @@
-package com.opsbot.controller;
+package com.opsbot.dto;
 
-import com.opsbot.service.RcaService;
-import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
-import reactor.core.publisher.Flux;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
-import java.util.Map;
+import java.util.List;
 
-@RestController
-@RequestMapping("/api")
-public class RcaController {
+/*
+ * This is the contract we enforce on Claude's output via prompt engineering.
+ * Every field here must be explicitly asked for in the prompt — Claude won't
+ * invent structure we haven't requested.
+ *
+ * We use @JsonProperty to map snake_case JSON keys (Claude's output)
+ * to camelCase Java fields (our convention).
+ */
+@Data
+@NoArgsConstructor
+public class RcaResponse {
 
-    private final RcaService rcaService;
-
-    public RcaController(RcaService rcaService) {
-        this.rcaService = rcaService;
-    }
-
-    /*
-     * POST /api/rca
-     *
-     * Accepts any JSON alert payload — deliberately untyped (Map<String,Object>)
-     * because alert schemas differ per monitoring tool.
-     *
-     * Returns: text/event-stream (SSE)
-     * Each chunk from Claude is pushed to the client as it arrives.
-     * The browser/client receives the JSON being built in real time.
-     *
-     * MediaType.TEXT_EVENT_STREAM_VALUE is the SSE content type.
-     * Spring WebFlux handles the SSE framing automatically when a
-     * controller method returns Flux<String> with this media type —
-     * each emitted String becomes a "data: ..." SSE event.
-     *
-     * Why @RequestBody Map and not a typed DTO?
-     * Alert payloads from PagerDuty, Prometheus, and Datadog all have
-     * different shapes. A typed DTO would require a separate class per tool.
-     * We accept raw JSON and let Claude interpret it — that's actually
-     * one of the strengths of using an LLM here.
-     */
-    @PostMapping(
-            value = "/rca",
-            produces = MediaType.TEXT_EVENT_STREAM_VALUE
-    )
-    public Flux<String> analyzeAlert(@RequestBody Map<String, Object> alertPayload) {
-        return rcaService.streamRca(alertPayload);
-    }
+    @JsonProperty("root_cause")
+    private String rootCause;
 
     /*
-     * Global error handler for this controller.
-     * If Claude returns unparseable JSON (our 500 decision), this catches
-     * the IllegalStateException from RcaService and returns a clean error.
+     * Severity as a string enum — we don't use a Java enum here because
+     * Claude might occasionally return "CRITICAL" vs "Critical" vs "critical".
+     * We normalise it in the service layer after parsing.
      */
-    @ExceptionHandler(IllegalStateException.class)
-    public ResponseEntity<Map<String, String>> handleParseError(IllegalStateException ex) {
-        return ResponseEntity
-                .internalServerError()
-                .body(Map.of("error", ex.getMessage()));
+    private String severity;                    // LOW | MEDIUM | HIGH | CRITICAL
+
+    @JsonProperty("affected_services")
+    private List<String> affectedServices;
+
+    @JsonProperty("recommended_fix")
+    private RecommendedFix recommendedFix;
+
+    @Data
+    @NoArgsConstructor
+    public static class RecommendedFix {
+        private String summary;
+        private List<String> steps;
+
+        @JsonProperty("estimated_resolution_time")
+        private String estimatedResolutionTime;  // e.g. "5-10 minutes"
     }
 }

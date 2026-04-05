@@ -2,8 +2,10 @@ package com.opsbot.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.opsbot.model.RunbookChunk;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
 import java.util.Map;
 
 @Component
@@ -16,30 +18,17 @@ public class RcaPromptBuilder {
     }
 
     /*
-     * PROMPT ENGINEERING DECISIONS — each one is intentional:
-     *
-     * 1. SYSTEM prompt sets the persona and hard constraints.
-     *    Putting JSON format rules in the SYSTEM prompt (not user prompt) makes
-     *    Claude treat them as non-negotiable instructions, not suggestions.
-     *
-     * 2. We show Claude the EXACT JSON schema we expect.
-     *    LLMs are far more reliable when shown the target structure than when
-     *    described in prose ("return a JSON with a root_cause field...").
-     *
-     * 3. "Return ONLY valid JSON. No explanation, no markdown, no code fences."
-     *    Without this, Claude wraps the JSON in ```json ... ``` which breaks
-     *    Jackson parsing. This instruction eliminates that behaviour.
-     *
-     * 4. We inject the raw alert payload as a JSON string in the user prompt.
-     *    This keeps the system prompt static (cacheable by Anthropic) and puts
-     *    the dynamic content in the user turn — better for prompt caching.
+     * System prompt is STATIC — same for every request.
+     * Keeping it static has two benefits:
+     * 1. Anthropic can cache it (prompt caching feature) saving cost
+     * 2. Claude gets a consistent persona and output format every time
      */
     public String buildSystemPrompt() {
         return """
                 You are OpsBot, an expert Site Reliability Engineer performing Root Cause Analysis.
                 
-                When given an alert payload, analyze it and respond ONLY with a valid JSON object.
-                No explanation, no markdown, no code fences — raw JSON only.
+                When given an alert payload and relevant runbook context, analyze both and respond
+                ONLY with a valid JSON object. No explanation, no markdown, no code fences — raw JSON only.
                 
                 Your response must exactly match this structure:
                 {
@@ -61,20 +50,58 @@ public class RcaPromptBuilder {
                 - HIGH: major degradation, many users affected
                 - MEDIUM: partial degradation, workaround available
                 - LOW: minor issue, minimal user impact
+                
+                If runbook context is provided, use it to inform your fix steps.
+                If no relevant context is found, rely on general SRE knowledge.
                 """;
     }
 
-    public String buildUserPrompt(Map<String, Object> alertPayload) {
+    /*
+     * User prompt is DYNAMIC — changes per request.
+     * Two sections:
+     *   1. RUNBOOK CONTEXT — top 5 similar chunks from pgvector
+     *   2. ALERT PAYLOAD   — the raw alert JSON
+     *
+     * Why inject runbook context in USER prompt not SYSTEM prompt?
+     * System prompt should be static for caching. Dynamic content
+     * (alert data, retrieved chunks) always goes in the user turn.
+     */
+    public String buildUserPrompt(Map<String, Object> alertPayload,
+                                  List<RunbookChunk> relevantChunks) {
         try {
             String alertJson = objectMapper.writerWithDefaultPrettyPrinter()
                     .writeValueAsString(alertPayload);
-            return """
-                    Analyze this alert and return the RCA JSON:
-                    
-                    %s
-                    """.formatted(alertJson);
+
+            StringBuilder prompt = new StringBuilder();
+
+            if (!relevantChunks.isEmpty()) {
+                prompt.append("RELEVANT RUNBOOK CONTEXT:\n");
+                prompt.append("─".repeat(40)).append("\n");
+
+                for (int i = 0; i < relevantChunks.size(); i++) {
+                    RunbookChunk chunk = relevantChunks.get(i);
+                    prompt.append(String.format("[%d] From: %s\n", i + 1, chunk.getSource()));
+                    prompt.append(chunk.getContent().trim());
+                    prompt.append("\n\n");
+                }
+                prompt.append("─".repeat(40)).append("\n\n");
+            } else {
+                prompt.append("RUNBOOK CONTEXT: No relevant runbooks found.\n\n");
+            }
+
+            prompt.append("ALERT PAYLOAD:\n");
+            prompt.append(alertJson);
+            prompt.append("\n\nAnalyze the alert using the runbook context above and return the RCA JSON:");
+
+            return prompt.toString();
+
         } catch (JsonProcessingException e) {
             throw new IllegalArgumentException("Failed to serialize alert payload", e);
         }
+    }
+
+    // Overload — no chunks (for tests and fallback)
+    public String buildUserPrompt(Map<String, Object> alertPayload) {
+        return buildUserPrompt(alertPayload, List.of());
     }
 }

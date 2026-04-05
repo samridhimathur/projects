@@ -84,21 +84,50 @@ public class AnthropicClient {
     }
 
     /*
+     * Takes one raw SSE data line as a String.
      * Parses each SSE data line to extract just the text content.
      * Returns Mono.empty() for non-text events (message_start, ping, etc.)
      * so they are silently filtered out of the Flux.
+     *
+     *  What Claude actually sends over the wire
+        When you call Claude with stream: true, it doesn't send back a clean string. It sends a series of raw SSE events that look like this:
+        data: {"type": "message_start", "message": {"id": "msg_123", "model": "claude-sonnet..."}}
+
+        data: {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}
+
+        data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Root"}}
+
+        data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": " cause"}}
+
+        data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": " is"}}
+
+        data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": " memory"}}
+
+        data: {"type": "content_block_stop", "index": 0}
+
+        data: {"type": "message_delta", "delta": {"stop_reason": "end_turn"}}
+
+        data: {"type": "message_stop"}
+        There are 6+ different event types but you only care about one —
+        * content_block_delta with text_delta. That is where the actual text lives.
+        * Everything else is metadata about the stream lifecycle.
      */
     private Mono<String> extractTextDelta(String data) {
         try {
+            //  Parses the raw JSON string into a navigable tree. JsonNode lets you traverse nested JSON without creating a typed class for it.
             JsonNode node = objectMapper.readTree(data);
+            // Reads the top-level "type" field. This will be one of: message_start, content_block_start, content_block_delta, content_block_stop, message_delta, message_stop.
             String type = node.path("type").asText();
-
+            // We only care about delta events — the ones that actually carry text. All others are skipped.
             if ("content_block_delta".equals(type)) {
+                //  Drills into the nested delta object and reads its type. This is "text_delta" for normal text but could also be "input_json_delta" for tool use events — which we also don't need.
                 String deltaType = node.path("delta").path("type").asText();
+                // If it's a text delta, extract the actual text value and wrap it in Mono.just() — this emits one string into the Flux.
                 if ("text_delta".equals(deltaType)) {
                     return Mono.just(node.path("delta").path("text").asText());
                 }
             }
+            //For every other event type — message_start, content_block_stop etc — return Mono.empty(). This emits nothing into the Flux. The event is silently dropped.
             return Mono.empty();    // ignore all other event types
         } catch (Exception e) {
             log.warn("Failed to parse SSE event: {}", data);
