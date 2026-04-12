@@ -2,7 +2,7 @@ package com.opsbot.client;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.opsbot.config.AnthropicConfig;
+import com.opsbot.config.AnthropicProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -19,14 +19,14 @@ public class AnthropicClient {
     private static final Logger log = LoggerFactory.getLogger(AnthropicClient.class);
 
     private final WebClient webClient;
-    private final AnthropicConfig config;
+    private final AnthropicProperties properties;
     private final ObjectMapper objectMapper;
 
     public AnthropicClient(WebClient anthropicWebClient,
-                           AnthropicConfig config,
+                           AnthropicProperties properties,
                            ObjectMapper objectMapper) {
         this.webClient = anthropicWebClient;
-        this.config = config;
+        this.properties = properties;
         this.objectMapper = objectMapper;
     }
 
@@ -49,8 +49,8 @@ public class AnthropicClient {
      */
     public Flux<String> streamRca(String systemPrompt, String userPrompt) {
         Map<String, Object> requestBody = Map.of(
-                "model", config.getModel(),
-                "max_tokens", config.getMaxTokens(),
+                "model", properties.getModel(),
+                "max_tokens", properties.getMaxTokens(),
                 "stream", true,                         // enable SSE streaming
                 "system", systemPrompt,
                 "messages", List.of(

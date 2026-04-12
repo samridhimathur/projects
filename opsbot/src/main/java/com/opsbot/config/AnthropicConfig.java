@@ -1,18 +1,17 @@
 package com.opsbot.config;
 
-import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.reactive.function.client.WebClient;
 
 @Configuration
-@ConfigurationProperties(prefix = "anthropic.api")
 public class AnthropicConfig {
 
-    private String key;
-    private String baseUrl;
-    private String model;
-    private int maxTokens;
+    private final AnthropicProperties anthropicProperties;
+
+    public AnthropicConfig(AnthropicProperties anthropicProperties) {
+        this.anthropicProperties = anthropicProperties;
+    }
 
     /*
      * WebClient is Spring WebFlux's non-blocking HTTP client.
@@ -27,23 +26,13 @@ public class AnthropicConfig {
     @Bean
     public WebClient anthropicWebClient() {
         return WebClient.builder()
-                .baseUrl(baseUrl)
-                .defaultHeader("x-api-key", key)
+                .baseUrl(anthropicProperties.getBaseUrl())
+                .defaultHeader("x-api-key", anthropicProperties.getKey())
                 .defaultHeader("anthropic-version", "2023-06-01")
                 .defaultHeader("content-type", "application/json")
                 .codecs(config -> config
                         .defaultCodecs()
-                        .maxInMemorySize(2 * 1024 * 1024))  // 2MB buffer for large responses
+                        .maxInMemorySize(2 * 1024 * 1024))
                 .build();
     }
-
-    // Getters and setters — required by @ConfigurationProperties
-    public String getKey() { return key; }
-    public void setKey(String key) { this.key = key; }
-    public String getBaseUrl() { return baseUrl; }
-    public void setBaseUrl(String baseUrl) { this.baseUrl = baseUrl; }
-    public String getModel() { return model; }
-    public void setModel(String model) { this.model = model; }
-    public int getMaxTokens() { return maxTokens; }
-    public void setMaxTokens(int maxTokens) { this.maxTokens = maxTokens; }
 }

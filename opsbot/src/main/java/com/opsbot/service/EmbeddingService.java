@@ -1,7 +1,7 @@
 package com.opsbot.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.opsbot.config.CohereConfig;
+import com.opsbot.config.CohereProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -12,52 +12,27 @@ import reactor.core.publisher.Mono;
 import java.util.List;
 import java.util.Map;
 
-/*
- * EmbeddingService — converts text to float[] using Cohere embed-english-v3.0
- *
- * WHAT IS AN EMBEDDING?
- * A vector (float array) where each number encodes some aspect of meaning.
- * Similar texts produce geometrically close vectors.
- * "memory leak" and "OOM error" will be close. "memory leak" and "pizza" will be far.
- *
- * WHY COHERE embed-english-v3.0?
- * - 1024 dimensions — matches our vector(1024) schema exactly, no changes needed
- * - Excellent for technical text — trained on English technical content
- *
- * MATURE ALTERNATIVES:
- * - Voyage AI voyage-3-lite  → 1024 dims, 200M free tokens (most generous free tier)
- * - OpenAI text-embedding-3-small → 1536 dims, $5 free credit (need schema change)
- * - Google Gemini Embedding  → 3072 dims, free via AI Studio (need schema change)
- * - Ollama nomic-embed-text  → 768 dims, completely free local (need schema change)
- * - LangChain4j              → wraps any of the above with one interface (Week 4)
- *
- */
 @Service
 public class EmbeddingService {
 
     private static final Logger log = LoggerFactory.getLogger(EmbeddingService.class);
 
     private final WebClient cohereWebClient;
-    private final CohereConfig cohereConfig;
+    private final CohereProperties cohereProperties;
 
     /*
-     * @Qualifier("cohereWebClient") tells Spring:
-     * "inject the WebClient bean named cohereWebClient"
+     * We inject CohereProperties here — NOT CohereConfig.
      *
-     * Without @Qualifier, Spring sees two WebClient beans
-     * (anthropicWebClient and cohereWebClient) and does not know
-     * which one to inject here — it throws NoUniqueBeanDefinitionException.
+     * CohereProperties is the @Component that holds the actual values.
+     * CohereConfig is only responsible for creating the WebClient bean.
      *
-     * ALTERNATIVE to @Qualifier:
-     * Name the parameter exactly the same as the bean:
-     *   public EmbeddingService(WebClient cohereWebClient, ...)
-     * Spring matches by parameter name as a fallback. But @Qualifier
-     * is more explicit and safer — always prefer it.
+     * cohereProperties.getModel() will never be null here because
+     * Spring fully binds @ConfigurationProperties before injecting.
      */
     public EmbeddingService(@Qualifier("cohereWebClient") WebClient cohereWebClient,
-                            CohereConfig cohereConfig) {
+                            CohereProperties cohereProperties) {
         this.cohereWebClient = cohereWebClient;
-        this.cohereConfig = cohereConfig;
+        this.cohereProperties = cohereProperties;
     }
 
     /*
@@ -81,24 +56,28 @@ public class EmbeddingService {
      *   "embeddings": [[0.23, -0.87, 0.41, ...]]  ← array of arrays
      *                   ↑ index 0 = first text's embedding
      * }
+
+     * For storing runbook chunks in DB — use search_document.
+     * Cohere trains the model differently for storage vs querying.
      */
     public Mono<float[]> generateEmbedding(String text) {
-        return generateEmbedding(text, "search_document");
+        return generateEmbeddingInternal(text, "search_document");
     }
 
     /*
-     * Overload for query embeddings — used when searching pgvector.
-     * The alert payload is a QUERY so it uses "search_query" input type.
-     * Runbooks use "search_document" input type.
+     * For querying pgvector at RCA time — use search_query.
+     * Using the correct input_type improves retrieval quality.
      */
     public Mono<float[]> generateQueryEmbedding(String text) {
-        return generateEmbedding(text, "search_query");
+        return generateEmbeddingInternal(text, "search_query");
     }
 
-    private Mono<float[]> generateEmbedding(String text, String inputType) {
+    private Mono<float[]> generateEmbeddingInternal(String text, String inputType) {
+
+        // cohereProperties.getModel() is "embed-english-v3.0" — never null
         Map<String, Object> requestBody = Map.of(
                 "texts", List.of(text),
-                "model", cohereConfig.getModel(),
+                "model", cohereProperties.getModel(),
                 "input_type", inputType
         );
 
@@ -107,19 +86,10 @@ public class EmbeddingService {
                 .bodyValue(requestBody)
                 .retrieve()
                 .bodyToMono(JsonNode.class)
-                .map(response -> parseEmbedding(response))
-                .doOnSuccess(v  -> log.debug("Embedding generated, dims={}", v.length))
+                .map(this::parseEmbedding)
+                .doOnSuccess(v  -> log.debug("Embedding generated dims={}", v.length))
                 .doOnError(e    -> log.error("Cohere embedding failed: {}", e.getMessage()))
                 .onErrorResume(e -> {
-                    /*
-                     * If Cohere is down or rate limited, fall back to a zero vector.
-                     * This means the RCA will run without runbook context rather
-                     * than failing entirely. The alert still gets analysed by Claude,
-                     * just without relevant runbook chunks injected.
-                     *
-                     * In production you might want to fail hard here instead,
-                     * depending on how critical runbook context is to your RCA quality.
-                     */
                     log.warn("Cohere unavailable, using zero vector fallback");
                     return Mono.just(new float[1024]);
                 });
@@ -136,7 +106,7 @@ public class EmbeddingService {
         JsonNode embeddingNode = response.path("embeddings").get(0);
 
         if (embeddingNode == null || !embeddingNode.isArray()) {
-            log.error("Unexpected Cohere response shape: {}", response);
+            log.error("Unexpected Cohere response: {}", response);
             return new float[1024];
         }
 
@@ -152,6 +122,7 @@ public class EmbeddingService {
      * Required by the native SQL query:
      *   ORDER BY embedding <=> CAST(:embedding AS vector)
      */
+
     public String vectorToString(float[] vector) {
         StringBuilder sb = new StringBuilder("[");
         for (int i = 0; i < vector.length; i++) {
