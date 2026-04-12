@@ -5,7 +5,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.opsbot.config.AnthropicProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
@@ -24,7 +23,7 @@ public class AnthropicClient {
     private final ObjectMapper objectMapper;
 
     public AnthropicClient(WebClient anthropicWebClient,
-                           @Qualifier("anthropicProperties") AnthropicProperties properties,
+                           AnthropicProperties properties,
                            ObjectMapper objectMapper) {
         this.webClient = anthropicWebClient;
         this.properties = properties;

@@ -45,3 +45,10 @@ logging:
   level:
     com.opsbot: DEBUG
     org.springframework.web: INFO
+    org.springframework.boot.context.properties: TRACE
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: env, health
