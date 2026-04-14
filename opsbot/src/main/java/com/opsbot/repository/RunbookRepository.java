@@ -35,9 +35,9 @@ public interface RunbookRepository extends JpaRepository<RunbookChunk, Long> {
      */
     @Query(
             value = """
-            SELECT *
+            SELECT id, source, chunk_index, content, created_at
             FROM runbook_chunks
-            ORDER BY embedding <=> :embedding
+            ORDER BY embedding <=> CAST(CAST(:embedding AS text) AS vector)
             LIMIT 5
             """,
             nativeQuery = true
