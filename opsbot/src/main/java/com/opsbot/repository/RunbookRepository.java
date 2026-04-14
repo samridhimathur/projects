@@ -37,7 +37,7 @@ public interface RunbookRepository extends JpaRepository<RunbookChunk, Long> {
             value = """
             SELECT *
             FROM runbook_chunks
-            ORDER BY embedding <=> CAST(:embedding AS vector)
+            ORDER BY embedding <=> :embedding
             LIMIT 5
             """,
             nativeQuery = true

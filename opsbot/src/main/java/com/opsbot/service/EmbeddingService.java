@@ -130,6 +130,7 @@ public class EmbeddingService {
             if (i < vector.length - 1) sb.append(",");
         }
         sb.append("]");
+        log.info("Vector to string: " + sb.toString());
         return sb.toString();
     }
 }
