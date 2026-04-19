@@ -72,12 +72,13 @@ public class AnthropicClient {
                 )
                 .bodyToFlux(String.class)
                 .doOnNext(line -> log.debug("RAW SSE LINE: {}", line))  // ADD THIS
-                .filter(line -> line.startsWith("data:"))
-                .map(line -> line.substring(5).trim())
+                .map(line -> line.startsWith("data:") ? line.substring(5).trim() : line.trim())
+                .filter(data -> !data.isBlank())
                 .filter(data -> !data.equals("[DONE]"))
+                .filter(data -> data.startsWith("{"))   // only process JSON objects
                 .flatMap(this::extractTextDelta)
-                .doOnNext(chunk -> log.debug("EXTRACTED CHUNK: {}", chunk))  // ADD THIS
-                .doOnComplete(() -> log.debug("STREAM COMPLETED"))           // ADD THIS
+                .doOnNext(chunk -> log.info("EXTRACTED CHUNK: {}", chunk))  // ADD THIS
+                .doOnComplete(() -> log.info("STREAM COMPLETED"))           // ADD THIS
                 .doOnError(e -> log.error("Anthropic streaming error: {}", e.getMessage()));
     }
 
