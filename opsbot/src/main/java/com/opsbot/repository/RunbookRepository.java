@@ -1,6 +1,7 @@
 package com.opsbot.repository;
 
 import com.opsbot.model.RunbookChunk;
+import com.opsbot.model.RunbookViewProjection;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -42,7 +43,7 @@ public interface RunbookRepository extends JpaRepository<RunbookChunk, Long> {
             """,
             nativeQuery = true
     )
-    List<RunbookChunk> findTopSimilarChunks(@Param("embedding") String embedding);
+    List<RunbookViewProjection> findTopSimilarChunks(@Param("embedding") String embedding);
 
     boolean existsBySourceAndChunkIndex(String source, Integer chunkIndex);
 }

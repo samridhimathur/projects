@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.opsbot.config.AnthropicProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
@@ -62,11 +63,21 @@ public class AnthropicClient {
                 .uri("/v1/messages")
                 .bodyValue(requestBody)
                 .retrieve()
-                .bodyToFlux(String.class)               // raw SSE lines as strings
+                .onStatus(HttpStatusCode::isError, response ->
+                        response.bodyToMono(String.class)
+                                .doOnNext(body -> log.error("Anthropic API error {}: {}",
+                                        response.statusCode(), body))
+                                .map(body -> new RuntimeException(
+                                        "Anthropic API error " + response.statusCode() + ": " + body))
+                )
+                .bodyToFlux(String.class)
+                .doOnNext(line -> log.debug("RAW SSE LINE: {}", line))  // ADD THIS
                 .filter(line -> line.startsWith("data:"))
-                .map(line -> line.substring(5).trim())  // strip "data: " prefix
+                .map(line -> line.substring(5).trim())
                 .filter(data -> !data.equals("[DONE]"))
                 .flatMap(this::extractTextDelta)
+                .doOnNext(chunk -> log.debug("EXTRACTED CHUNK: {}", chunk))  // ADD THIS
+                .doOnComplete(() -> log.debug("STREAM COMPLETED"))           // ADD THIS
                 .doOnError(e -> log.error("Anthropic streaming error: {}", e.getMessage()));
     }
 
@@ -88,6 +99,15 @@ public class AnthropicClient {
      * Parses each SSE data line to extract just the text content.
      * Returns Mono.empty() for non-text events (message_start, ping, etc.)
      * so they are silently filtered out of the Flux.
+     *
+     * An SSE event refers to a message sent over a Server-Sent Events (SSE) connection.
+
+     * What SSE is ??
+     * Server-Sent Events is a web technology that allows a server to push real-time updates to a client (usually a browser)
+     * over a single long-lived HTTP connection.
+     * Unlike WebSockets (which are bidirectional), SSE is one-way: the server can continuously send data to the client,
+     * but the client cannot send data back over the same channel.
+     * It uses the text/event-stream MIME type.
      *
      *  What Claude actually sends over the wire
         When you call Claude with stream: true, it doesn't send back a clean string. It sends a series of raw SSE events that look like this:
@@ -113,24 +133,64 @@ public class AnthropicClient {
         * Everything else is metadata about the stream lifecycle.
      */
     private Mono<String> extractTextDelta(String data) {
+        log.info("PARSING SSE DATA: [{}]", data);
+
         try {
             //  Parses the raw JSON string into a navigable tree. JsonNode lets you traverse nested JSON without creating a typed class for it.
             JsonNode node = objectMapper.readTree(data);
             // Reads the top-level "type" field. This will be one of: message_start, content_block_start, content_block_delta, content_block_stop, message_delta, message_stop.
             String type = node.path("type").asText();
-            // We only care about delta events — the ones that actually carry text. All others are skipped.
+
+            log.info("SSE EVENT TYPE: [{}]", type);
+
+            /*
+             * Only content_block_delta events carry actual text.
+             * All other types (message_start, ping, message_stop etc)
+             * are control events — we drop them with Mono.empty().
+             */
             if ("content_block_delta".equals(type)) {
-                //  Drills into the nested delta object and reads its type. This is "text_delta" for normal text but could also be "input_json_delta" for tool use events — which we also don't need.
-                String deltaType = node.path("delta").path("type").asText();
-                // If it's a text delta, extract the actual text value and wrap it in Mono.just() — this emits one string into the Flux.
+                //  Drills into the nested delta object and reads its type. This is "text_delta" for normal text but could
+                //  also be "input_json_delta" for tool use events — which we also don't need.
+                JsonNode delta = node.path("delta");
+                String deltaType = delta.path("type").asText();
+
+                log.info("DELTA TYPE: [{}]", deltaType);
+
+                /*
+                 * delta.type can be:
+                 *   text_delta       — regular text content — EXTRACT THIS
+                 *   input_json_delta — tool use JSON — ignore for our use case
+                 */
                 if ("text_delta".equals(deltaType)) {
-                    return Mono.just(node.path("delta").path("text").asText());
+                    String text = delta.path("text").asText();
+                    log.info("TEXT CONTENT: [{}]", text);
+                    return Mono.just(text);
                 }
+                //For every other event type — message_start, content_block_stop etc — return Mono.empty(). This emits
+                // nothing into the Flux. The event is silently dropped.
+                log.info("Ignoring delta type: {}", deltaType);
+                return Mono.empty();
             }
-            //For every other event type — message_start, content_block_stop etc — return Mono.empty(). This emits nothing into the Flux. The event is silently dropped.
-            return Mono.empty();    // ignore all other event types
+
+            /*
+             * Handle error events — Anthropic sometimes sends errors
+             * as SSE events mid-stream rather than HTTP status codes.
+             * Example: {"type":"error","error":{"type":"overloaded_error","message":"..."}}
+             */
+            if ("error".equals(type)) {
+                String errorType = node.path("error").path("type").asText();
+                String errorMsg  = node.path("error").path("message").asText();
+                log.error("Anthropic SSE error event type={} message={}", errorType, errorMsg);
+                return Mono.error(new RuntimeException(
+                        "Anthropic error: " + errorType + " — " + errorMsg));
+            }
+
+            // All other event types — silently drop
+            log.info("Dropping SSE event type: {}", type);
+            return Mono.empty();
+
         } catch (Exception e) {
-            log.warn("Failed to parse SSE event: {}", data);
+            log.warn("Failed to parse SSE event data=[{}] error={}", data, e.getMessage());
             return Mono.empty();
         }
     }

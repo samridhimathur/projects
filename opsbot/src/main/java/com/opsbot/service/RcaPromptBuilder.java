@@ -2,7 +2,7 @@ package com.opsbot.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.opsbot.model.RunbookChunk;
+import com.opsbot.model.RunbookViewProjection;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -67,7 +67,7 @@ public class RcaPromptBuilder {
      * (alert data, retrieved chunks) always goes in the user turn.
      */
     public String buildUserPrompt(Map<String, Object> alertPayload,
-                                  List<RunbookChunk> relevantChunks) {
+                                  List<RunbookViewProjection> relevantChunks) {
         try {
             String alertJson = objectMapper.writerWithDefaultPrettyPrinter()
                     .writeValueAsString(alertPayload);
@@ -79,7 +79,7 @@ public class RcaPromptBuilder {
                 prompt.append("─".repeat(40)).append("\n");
 
                 for (int i = 0; i < relevantChunks.size(); i++) {
-                    RunbookChunk chunk = relevantChunks.get(i);
+                    RunbookViewProjection chunk = relevantChunks.get(i);
                     prompt.append(String.format("[%d] From: %s\n", i + 1, chunk.getSource()));
                     prompt.append(chunk.getContent().trim());
                     prompt.append("\n\n");

@@ -3,8 +3,8 @@ package com.opsbot.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.opsbot.client.AnthropicClient;
 import com.opsbot.dto.RcaResponse;
-import com.opsbot.model.RunbookChunk;
 import com.opsbot.model.RcaSession;
+import com.opsbot.model.RunbookViewProjection;
 import com.opsbot.repository.RcaSessionRepository;
 import com.opsbot.repository.RunbookRepository;
 import org.slf4j.Logger;
@@ -116,7 +116,7 @@ public class RcaService {
      * This is the RAG retrieval step.
      * subscribeOn(boundedElastic) because findTopSimilarChunks is a blocking JPA call.
      */
-    private Mono<List<RunbookChunk>> findSimilarChunks(float[] embedding) {
+    private Mono<List<RunbookViewProjection>> findSimilarChunks(float[] embedding) {
         String vectorString = embeddingService.vectorToString(embedding);
         return Mono.fromCallable(() ->
                         runbookRepository.findTopSimilarChunks(vectorString)
