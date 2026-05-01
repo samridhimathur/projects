@@ -1,7 +1,7 @@
 package com.opsbot.repository;
 
 import com.opsbot.model.RunbookChunk;
-import com.opsbot.model.RunbookViewProjection;
+import com.opsbot.dto.RunbookViewProjection;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;

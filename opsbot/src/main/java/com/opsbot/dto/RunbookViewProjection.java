@@ -1,4 +1,4 @@
-package com.opsbot.model;
+package com.opsbot.dto;
 
 import java.time.OffsetDateTime;
 

@@ -2,7 +2,7 @@ package com.opsbot.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.opsbot.model.RunbookViewProjection;
+import com.opsbot.dto.RunbookViewProjection;
 import org.springframework.stereotype.Component;
 
 import java.util.List;

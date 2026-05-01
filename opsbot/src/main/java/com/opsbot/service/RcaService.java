@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.opsbot.client.AnthropicClient;
 import com.opsbot.dto.RcaResponse;
 import com.opsbot.model.RcaSession;
-import com.opsbot.model.RunbookViewProjection;
+import com.opsbot.dto.RunbookViewProjection;
 import com.opsbot.repository.RcaSessionRepository;
 import com.opsbot.repository.RunbookRepository;
 import org.slf4j.Logger;
