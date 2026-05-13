@@ -1,0 +1,271 @@
+{
+  "version": "1.0",
+  "description": "Deterministic remediation playbooks for OpsBot client",
+  "remediations": {
+    "high_cpu": {
+      "description": "Handle high CPU usage anomaly",
+      "severity": "HIGH",
+      "actions": [
+        {
+          "id": "gather_diagnostics",
+          "type": "command",
+          "command": "ps aux --sort=-%cpu | head -5",
+          "description": "Identify top 5 CPU-consuming processes",
+          "timeout_seconds": 5,
+          "capture_output": true
+        },
+        {
+          "id": "check_rogue_process",
+          "type": "conditional",
+          "description": "Check if top process is known rogue",
+          "condition": {
+            "output_from": "gather_diagnostics",
+            "check": "contains_any_process",
+            "patterns": ["python stress", "java -heap", "dd if=/dev/zero"]
+          },
+          "then": [
+            {
+              "id": "kill_rogue_process",
+              "type": "command",
+              "command": "pkill -9 -f 'python stress|java -heap|dd if=/dev/zero'",
+              "description": "Kill known resource-heavy test process",
+              "requires_approval": false,
+              "timeout_seconds": 10,
+              "rollback": "# Process killed; no rollback available"
+            }
+          ],
+          "else": [
+            {
+              "id": "alert_investigation_needed",
+              "type": "alert",
+              "channel": "slack",
+              "severity": "HIGH",
+              "message": "High CPU detected but no known rogue process. Manual investigation needed.",
+              "include_signals": true
+            }
+          ]
+        },
+        {
+          "id": "wait_after_kill",
+          "type": "wait",
+          "seconds": 3,
+          "description": "Wait for process to be cleaned up"
+        },
+        {
+          "id": "verify_cpu_recovered",
+          "type": "verify",
+          "command": "top -b -n1 | grep Cpu",
+          "description": "Verify CPU usage decreased",
+          "expected_pattern": "Cpu\\(s\\):.*[0-7][0-9]\\.[0-9]%\\s+us",
+          "timeout_seconds": 30,
+          "max_retries": 3,
+          "retry_interval_seconds": 2
+        }
+      ]
+    },
+    "high_memory": {
+      "description": "Handle high memory usage anomaly",
+      "severity": "HIGH",
+      "actions": [
+        {
+          "id": "check_memory_hog",
+          "type": "command",
+          "command": "ps aux --sort=-%mem | head -3",
+          "description": "Identify top memory consumers",
+          "capture_output": true,
+          "timeout_seconds": 5
+        },
+        {
+          "id": "conditional_restart",
+          "type": "conditional",
+          "description": "Check if memory exceeds critical threshold and can be restarted",
+          "condition": {
+            "signal": "memory_percent",
+            "operator": "greater_than",
+            "threshold": 90
+          },
+          "then": [
+            {
+              "id": "restart_service",
+              "type": "command",
+              "command": "systemctl restart nginx || service nginx restart || /usr/local/nginx/sbin/nginx -s reload",
+              "description": "Attempt to restart memory-heavy service",
+              "requires_approval": false,
+              "timeout_seconds": 20,
+              "rollback": "systemctl start nginx || service nginx start"
+            }
+          ],
+          "else": [
+            {
+              "id": "escalate_high_memory",
+              "type": "alert",
+              "channel": "pagerduty",
+              "severity": "HIGH",
+              "message": "High memory (>80% but <90%) detected; manual review recommended"
+            }
+          ]
+        },
+        {
+          "id": "wait_after_restart",
+          "type": "wait",
+          "seconds": 5,
+          "description": "Allow service to stabilize"
+        },
+        {
+          "id": "verify_memory_recovered",
+          "type": "verify",
+          "command": "free | grep Mem",
+          "description": "Verify available memory increased",
+          "expected_pattern": "\\d+\\s+\\d+\\s+\\d+\\s+\\d+\\s+\\d+",
+          "timeout_seconds": 30,
+          "custom_check": "available_memory_percent < 75"
+        }
+      ]
+    },
+    "service_unhealthy": {
+      "description": "Handle service health check failures",
+      "severity": "CRITICAL",
+      "actions": [
+        {
+          "id": "log_service_status",
+          "type": "command",
+          "command": "systemctl status nginx || service nginx status || curl -s http://localhost:8080/health || echo 'Service check failed'",
+          "description": "Check current service status",
+          "capture_output": true,
+          "timeout_seconds": 5
+        },
+        {
+          "id": "attempt_restart",
+          "type": "command",
+          "command": "systemctl restart app || service app restart || /opt/app/start.sh",
+          "description": "Attempt graceful service restart",
+          "requires_approval": false,
+          "timeout_seconds": 30,
+          "rollback": "systemctl start app || service app start"
+        },
+        {
+          "id": "wait_service_startup",
+          "type": "wait",
+          "seconds": 5,
+          "description": "Allow service to come up"
+        },
+        {
+          "id": "health_check",
+          "type": "health_check",
+          "url": "http://localhost:8080/health",
+          "method": "GET",
+          "expected_status": 200,
+          "timeout_seconds": 10,
+          "max_retries": 3,
+          "retry_interval_seconds": 2,
+          "description": "Verify service is healthy"
+        },
+        {
+          "id": "escalate_if_unhealthy",
+          "type": "conditional",
+          "description": "If service still unhealthy after restart",
+          "condition": {
+            "output_from": "health_check",
+            "check": "failed"
+          },
+          "then": [
+            {
+              "id": "page_oncall",
+              "type": "alert",
+              "channel": "pagerduty",
+              "severity": "CRITICAL",
+              "message": "Service restart failed. Escalating to on-call team.",
+              "include_signals": true,
+              "urgency": "high"
+            }
+          ],
+          "else": [
+            {
+              "id": "log_success",
+              "type": "alert",
+              "channel": "slack",
+              "severity": "MEDIUM",
+              "message": "Service successfully restarted and health recovered."
+            }
+          ]
+        }
+      ]
+    },
+    "log_error_spike": {
+      "description": "Handle sudden spike in error log entries",
+      "severity": "CRITICAL",
+      "actions": [
+        {
+          "id": "capture_error_logs",
+          "type": "command",
+          "command": "tail -50 /var/log/app.log 2>/dev/null | grep -i 'error\\|exception' || tail -50 /var/log/syslog | grep ERROR || echo 'No recent errors found'",
+          "description": "Capture recent error logs for analysis",
+          "capture_output": true,
+          "timeout_seconds": 5
+        },
+        {
+          "id": "check_database_connection",
+          "type": "command",
+          "command": "nc -zv postgres.local 5432 2>&1 || mysql -h db.local -e 'SELECT 1' 2>&1 || echo 'DB check inconclusive'",
+          "description": "Check if database connectivity is the issue",
+          "capture_output": true,
+          "timeout_seconds": 5,
+          "optional": true
+        },
+        {
+          "id": "conditional_action",
+          "type": "conditional",
+          "description": "Determine action based on error pattern",
+          "condition": {
+            "output_from": "capture_error_logs",
+            "check": "contains",
+            "pattern": "Connection refused|Connection reset|Database error"
+          },
+          "then": [
+            {
+              "id": "restart_database_client",
+              "type": "command",
+              "command": "systemctl restart app-db-pool || service app-db-pool restart",
+              "description": "Restart database connection pool",
+              "requires_approval": false,
+              "timeout_seconds": 15
+            }
+          ],
+          "else": [
+            {
+              "id": "alert_manual_review",
+              "type": "alert",
+              "channel": "slack",
+              "severity": "HIGH",
+              "message": "Error spike detected. Logs require manual review for root cause.",
+              "include_captured_logs": "capture_error_logs"
+            }
+          ]
+        },
+        {
+          "id": "wait_stabilization",
+          "type": "wait",
+          "seconds": 10,
+          "description": "Allow system to stabilize"
+        },
+        {
+          "id": "verify_errors_reduced",
+          "type": "verify",
+          "command": "tail -20 /var/log/app.log 2>/dev/null | grep -c 'ERROR' || echo '0'",
+          "description": "Verify error rate has decreased",
+          "expected_pattern": "^[0-2]$",
+          "timeout_seconds": 30
+        }
+      ]
+    }
+  },
+  "defaults": {
+    "approval_required_by_default": false,
+    "timeout_seconds": 30,
+    "log_all_actions": true,
+    "notify_on_remediation_attempt": true,
+    "notify_on_remediation_success": true,
+    "notify_on_remediation_failure": true
+  }
+}
+

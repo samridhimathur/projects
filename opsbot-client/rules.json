@@ -1,0 +1,70 @@
+{
+  "description": "Anomaly detection rules for OpsBot client",
+  "version": "1.0",
+  "rules": [
+    {
+      "rule_name": "high_cpu_85_percent",
+      "alert_type": "high_cpu",
+      "severity": "HIGH",
+      "metric_name": "cpu_percent",
+      "operator": "greater_than",
+      "threshold": 85.0,
+      "cooldown_seconds": 300
+    },
+    {
+      "rule_name": "high_memory_80_percent",
+      "alert_type": "high_memory",
+      "severity": "HIGH",
+      "metric_name": "memory_percent",
+      "operator": "greater_than",
+      "threshold": 80.0,
+      "cooldown_seconds": 300
+    },
+    {
+      "rule_name": "critical_memory_95_percent",
+      "alert_type": "critical_memory",
+      "severity": "CRITICAL",
+      "metric_name": "memory_percent",
+      "operator": "greater_than",
+      "threshold": 95.0,
+      "cooldown_seconds": 600
+    },
+    {
+      "rule_name": "disk_usage_high",
+      "alert_type": "high_disk",
+      "severity": "MEDIUM",
+      "metric_name": "disk_percent",
+      "operator": "greater_than",
+      "threshold": 90.0,
+      "cooldown_seconds": 1800
+    },
+    {
+      "rule_name": "service_down",
+      "alert_type": "service_unhealthy",
+      "severity": "CRITICAL",
+      "metric_name": "service_healthy",
+      "operator": "equals",
+      "threshold": 0,
+      "cooldown_seconds": 60
+    },
+    {
+      "rule_name": "high_error_rate",
+      "alert_type": "high_error_rate",
+      "severity": "HIGH",
+      "metric_name": "error_rate",
+      "operator": "greater_than",
+      "threshold": 0.05,
+      "cooldown_seconds": 300
+    },
+    {
+      "rule_name": "p99_latency_spike",
+      "alert_type": "p99_latency_high",
+      "severity": "MEDIUM",
+      "metric_name": "response_time_p99_ms",
+      "operator": "greater_than",
+      "threshold": 2000,
+      "cooldown_seconds": 300
+    }
+  ]
+}
+
